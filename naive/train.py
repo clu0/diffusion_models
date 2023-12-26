@@ -26,6 +26,10 @@ lr: float = 6 * 1e-4
 n_epoch: int = 200
 batch_size: int = 32
 
+device = torch.device("cpu")
+if torch.cuda.is_available():
+    device = torch.device("cuda")
+
 
 def get_beta_t(t: int) -> float:
     assert 1 <= t and t <= T, f"time index {t} must be in range [1, {T}]"
@@ -79,18 +83,28 @@ if __name__ == "__main__":
     )
 
     model = Unet()
-    if torch.cuda.is_available():
-        model.cuda()
+    model.to(device=device)
 
     loss_fn = F.mse_loss
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
+    model.train()
     for i in range(n_epoch):
-        for data, noise, times in train_dataloader:
+        for batch in train_dataloader:
+            data, noise, times = batch
+            data, noise, times = (
+                torch.from_numpy(data),
+                torch.from_numpy(noise),
+                torch.from_numpy(times),
+            )
+            data, noise, times = data.to(device), noise.to(device), times.to(device)
             optimizer.zero_grad()
             alpha_ts = alphas[times].reshape(-1, 1, 1, 1)
-            x_ts = np.sqrt(alpha_ts) * data + np.sqrt(1 - alpha_ts) * noise
+            x_ts = torch.sqrt(alpha_ts) * data + torch.sqrt(1 - alpha_ts) * noise
             pred = model(x_ts, times)
             loss_vals = loss_fn(pred, noise)
             optimizer.step()
         print(f"finished epoch {i}")
+
+    # TODO save the model when we actually have a real model
+    # torch.save(model.state_dict(), "model.pth")

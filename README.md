@@ -3,6 +3,7 @@ Learning about diffusion models
 
 ## Simplest diffusion model
 
+This will be in `naive/`.
 ### Training
 Training for a diffusion models turns out to be embaressingly simple after the simplifications done in [Ho et al. 20](https://arxiv.org/pdf/2006.11239.pdf) (but the explanation in Appendix B of [DN21](https://arxiv.org/pdf/2006.11239.pdf) is better). You simply minimize the following objective:
 $$
@@ -12,7 +13,7 @@ where the expectation is taken over $t \sim [1, T]$, $\epsilon \sim \mathcal N (
 
 And that's it. The model is usually taken to be a UNet, and the time schedule details can be found in Section 4 of Ho et al. 20:
 - Total time steps $T = 1000$
-- $\alpha_t = \prod_{i = 1}^t (1 - \beta_i)$
+- $\alpha_t = \prod_{i = 1}^t (1 - \beta_i)$ (note: our $\alpha_t$ is actually $\bar\alpha_t$ in the papers; their $\alpha_t$ is our $1 - \beta_t$).
 - $\beta$ ranges linearly from $\beta_1 = 10^{-4}$ to $\beta_T = 0.02$.
 
 That seems to be it! We will implement it in `train.py`.
