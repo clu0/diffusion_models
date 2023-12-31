@@ -1,0 +1,5 @@
+.DS_STORE
+*__MACOSX
+*__pycache__
+.mypy_cache
+*.zip

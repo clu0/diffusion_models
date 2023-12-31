@@ -4,11 +4,15 @@ Closely following the DDPM paper: https://github.com/hojonathanho/diffusion/tree
 
 Except that we use more than one head for the attention block
 """
+import logging
 import math
 from typing import Optional, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+logging.basicConfig(level=logging.ERROR)
+logger = logging.getLogger(__name__)
 
 
 EMBEDDING_DIM = 256
@@ -28,6 +32,8 @@ class Resnet(nn.Module):
     ):
         super().__init__()
         self.name = name
+        self.c_in = c_in
+        self.c_out = c_out
         assert (
             c_out // n_group_norm > 1 and c_in // n_group_norm > 1
         ), f"c_out = {c_out}, c_in = {c_in}, n_group_norm = {n_group_norm},  need c // n_group_norm > 1"
@@ -52,13 +58,15 @@ class Resnet(nn.Module):
 
     def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
         """Forward pass"""
+        logger.info(f"Resnet {self.name} input: x={x.size()}, t={t_emb.size()}, c_in={self.c_in}, c_out={self.c_out}")
         h: torch.Tensor = self.pre_timestep_block(x)
         t_emb = self.timestep_block(t_emb)
         h = h + t_emb[:, :, None, None]
+        logger.info(f"Resnet {self.name} pre timestep: h={h.size()}, t={t_emb.size()}")
         h = self.post_timestep_block(h)
         if hasattr(self, "identity_conv"):
             x = self.identity_conv(x)
-        print(f"Resnet {self.name} h={h.size()}, x={x.size()}, t={t_emb.size()}")
+        logger.info(f"Resnet {self.name} output: h={h.size()}, x={x.size()}, t={t_emb.size()}")
         return x + h
 
 
@@ -74,7 +82,7 @@ class Downsample(nn.Module):
         out: torch.Tensor = self.conv(x)
         assert out.size(2) == x.size(2) // 2
         assert out.size(3) == x.size(3) // 2
-        print(f"Downsample {self.name} x={x.size()}, out={out.size()}")
+        logger.info(f"Downsample {self.name} x={x.size()}, out={out.size()}")
         return out
 
 
@@ -91,7 +99,7 @@ class Upsample(nn.Module):
         out = self.conv(out)
         assert out.size(2) == x.size(2) * 2
         assert out.size(3) == x.size(3) * 2
-        print(f"Upsample {self.name} x={x.size()}, out={out.size()}")
+        logger.info(f"Upsample {self.name} x={x.size()}, out={out.size()}")
         return out
 
 
@@ -148,72 +156,87 @@ class Unet(nn.Module):
 
         self.initial_conv = nn.Conv2d(c_start, c_between[0], 3, padding=1)
 
-        self.downblocks = nn.Sequential()
+        self.downblocks = nn.ModuleList()
         for i, c_in in enumerate(c_between[:-1]):
             c_out = c_between[i + 1]
-            self.downblocks.add_module(
-                f"res_{i}",
+            self.downblocks.append(
                 Resnet(
                     c_in,
                     c_out,
-                    name=f"res_{i}",
+                    name=f"res_down_{i}",
                     n_group_norm=n_group_norm,
                     embd_dim=embd_dim,
-                ),
+                )
             )
-            self.downblocks.add_module(
-                f"down_{i}", Downsample(c_out, c_out, name=f"down_{i}")
+            self.downblocks.append(
+                Downsample(c_out, c_out, name=f"down_{i}")
             )
-        self.downblocks.add_module(
-            "res_middle_1",
+        self.downblocks.append(
             Resnet(
                 c_between[-1],
                 c_between[-1],
                 name="res_middle_1",
                 n_group_norm=n_group_norm,
                 embd_dim=embd_dim,
-            ),
+            )
         )
 
         self.attn = nn.MultiheadAttention(c_between[-1], 4, dropout=DROPOUT_RATE)
 
-        self.upblocks = nn.Sequential()
-        self.upblocks.add_module(
-            f"res_middle_2",
+        self.upblocks = nn.ModuleList()
+        logger.info(f"first upblock: {c_between[-1]} -> {c_between[-1]}")
+        self.upblocks.append(
             Resnet(
                 c_between[-1],
                 c_between[-1],
                 name="res_middle_2",
                 n_group_norm=n_group_norm,
                 embd_dim=embd_dim,
-            ),
+            )
         )
         reversed_c = list(reversed(c_between))
         for i, c_in in enumerate(reversed_c[:-1]):
             c_out = reversed_c[i + 1]
-            self.upblocks.add_module(
-                f"res_{i}",
+            logger.info(f"upblock {i}: {c_in} -> {c_out}")
+            self.upblocks.append(
                 Resnet(
                     c_in,
-                    c_out,
-                    name=f"res_{i}",
+                    c_in,
+                    name=f"res_up_{i}",
                     n_group_norm=n_group_norm,
                     embd_dim=embd_dim,
-                ),
+                )
             )
-            self.upblocks.add_module(f"up_{i}", Upsample(c_in, c_out, name=f"up_{i}"))
+            self.upblocks.append(Upsample(c_in, c_out, name=f"up_{i}"))
 
+        self.output_res = Resnet(
+            c_between[0],
+            c_last,
+            name="res_output",
+            n_group_norm=n_group_norm,
+            embd_dim=embd_dim,
+        )
         self.output_conv = nn.Conv2d(c_last, c_start, 3, padding=1)
 
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # get timestep embeddings
         t_emb: torch.Tensor = self.timestep_embedding
         t_emb = self.learnable_embedding_block(t_emb)
-        t_emb = t_emb.index_select(0, t.view(-1)).view(t.size(0), t.size(1), -1)
+        t_emb = t_emb.index_select(0, t.view(-1)).view(t.size(0), -1)
 
-        x = self.downblocks(x, t_emb)
-        h = self.attn(h, h, h)[0]
+        x = self.initial_conv(x)
+        for module in self.downblocks:
+            x = module(x, t_emb)
+        logger.info(f"x={x.size()}, t_emb={t_emb.size()}")
+        x_embedded = x.view(x.size(0), x.size(1), -1) # (B, C, H*W)
+        x_embedded = x_embedded.transpose(1, 2) # (B, H*W, C)
+        logger.info(f"x_embedded={x_embedded.size()}")
+        h = self.attn(x_embedded, x_embedded, x_embedded)[0]
+        h = h.transpose(1, 2).contiguous().view(x.size())
+        logger.info(f"h={h.size()}")
         x = x + h
-        x = self.upblocks(x, t_emb)
+        for module in self.upblocks:
+            x = module(x, t_emb)
+        x = self.output_res(x, t_emb)
         x = self.output_conv(x)
         return x
