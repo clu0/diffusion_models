@@ -3,7 +3,7 @@ Code to train a simple diffusion model, i.e. the epsilon_theta(x, t) model
 
 TODO: substitute the model for an actual UNet
 """
-from typing import Tuple
+from typing import Tuple, Optional
 from time import time
 
 import torch
@@ -28,8 +28,11 @@ in_h: int = 32
 in_w: int = 32
 
 lr: float = 6 * 1e-4
-n_epoch: int = 200
+n_epoch: int = 280
 batch_size: int = 64
+
+past_model_pth: Optional[str] = "models/model_epoch_220.pth"
+past_n_epoch = 220
 
 device = torch.device("cpu")
 if torch.cuda.is_available():
@@ -41,8 +44,8 @@ def get_beta_t(t: int) -> float:
     return (beta_1 * (T - t) + beta_T * (t - 1)) / (T - 1)
 
 
-betas: npt.NDArray[np.float_] = np.array([get_beta_t(t) for t in range(1, T + 1)])
-alphas: torch.Tensor = torch.from_numpy(np.cumprod(1 - betas))
+betas: torch.Tensor = torch.Tensor([get_beta_t(t) for t in range(1, T + 1)])
+alphas = torch.cumprod(1 - betas, dim=0)
 alphas = alphas.to(device=device)
 
 
@@ -80,15 +83,20 @@ if __name__ == "__main__":
     )
 
     model = Unet(c_start=in_c)
+    if past_model_pth is not None:
+        model.load_state_dict(torch.load(past_model_pth))
     model.to(device=device)
+    print(f"loaded model {past_model_pth}")
 
     loss_fn = F.mse_loss
     optimizer = optim.Adam(model.parameters(), lr=lr)
     train_losses = []
 
     model.train()
+    print(f"starting training for {n_epoch} epochs")
     for i in range(n_epoch):
         epoch_start = time()
+        i += past_n_epoch
         for j, batch in enumerate(train_dataloader):
             if (j + 1) % 100 == 0:
                 print(f"epoch {i}, batch {j}, loss {np.mean(train_losses[-100:])}")
@@ -110,7 +118,7 @@ if __name__ == "__main__":
 
             train_losses.append(loss_vals.item())
         print(f"finished epoch {i}, took {time() - epoch_start} seconds")
-        np.save("losses/train_losses.npy", np.array(train_losses))
+        np.save("losses/train_losses_220-500.npy", np.array(train_losses))
         if (i + 1) % 20 == 0:
             torch.save(model.state_dict(), f"models/model_epoch_{i + 1}.pth")
 

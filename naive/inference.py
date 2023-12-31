@@ -5,8 +5,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from .train import (
-    Unet,
+from train import (
     betas,
     alphas,
     T,
@@ -14,6 +13,7 @@ from .train import (
     in_h,
     in_w,
 )
+from src.model import Unet
 
 device = torch.device("cpu")
 if torch.cuda.is_available():
@@ -21,14 +21,14 @@ if torch.cuda.is_available():
 
 
 def sample_next_step(
-    x_t: torch.Tensor,
-    t: int,
+    x_t: torch.Tensor,  # (B, in_c, in_h, in_w)
+    t: torch.Tensor,  # (B, 1)
     model: nn.Module,
 ) -> torch.Tensor:
     """
     sample x_{t-1} given x_t and x_0
     """
-    assert 2 <= t and t <= T, f"time index {t} must be in range [2, {T}]"
+    assert torch.all(1 <= t) and torch.all(t < T), f"time index {t} must be in range [2, {T}]"
     beta_t = betas[t - 1]
     alpha_t = alphas[t - 1]
     alpha_t_1 = alphas[t - 2]
@@ -52,6 +52,7 @@ if __name__ == "__main__":
     x_curr = torch.randn(1, in_c, in_h, in_w).to(device=device)
 
     for t in range(T, 1, -1):
+        t_in = torch.tensor([[t]], dtype=torch.int32, device=device)
         x_curr = sample_next_step(x_curr, t, model)
 
     # TODO need to move x_curr to cpu

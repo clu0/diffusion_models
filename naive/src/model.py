@@ -221,6 +221,10 @@ class Unet(nn.Module):
     def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # get timestep embeddings
         t_emb: torch.Tensor = self.timestep_embedding
+
+        # the next step is copying the DDPM implementation, which passes the timestep embeddings through some dense layers
+        # But this is actually quite weird, because if we're passing time indices through a randomly initialized dense layer anyway,
+        # then why not just use trainable embeddings, like nn.Embedding?
         t_emb = self.learnable_embedding_block(t_emb)
         t_emb = t_emb.index_select(0, t.view(-1)).view(t.size(0), -1)
 
