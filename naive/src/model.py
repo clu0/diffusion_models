@@ -63,9 +63,13 @@ class Resnet(nn.Module):
         if c_in != c_out:
             self.identity_conv = nn.Conv2d(c_in, c_out, 1)
 
-    def forward(self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """Forward pass"""
-        logger.info(f"Resnet {self.name} input: x={x.size()}, t={t_emb.size()}, c_in={self.c_in}, c_out={self.c_out}")
+        logger.info(
+            f"Resnet {self.name} input: x={x.size()}, t={t_emb.size()}, c_in={self.c_in}, c_out={self.c_out}"
+        )
         h: torch.Tensor = self.pre_timestep_block(x)
         t_emb = self.timestep_block(t_emb)
         h = h + t_emb[:, :, None, None]
@@ -78,7 +82,9 @@ class Resnet(nn.Module):
         h = self.post_timestep_block(h)
         if hasattr(self, "identity_conv"):
             x = self.identity_conv(x)
-        logger.info(f"Resnet {self.name} output: h={h.size()}, x={x.size()}, t={t_emb.size()}")
+        logger.info(
+            f"Resnet {self.name} output: h={h.size()}, x={x.size()}, t={t_emb.size()}"
+        )
         return x + h
 
 
@@ -90,7 +96,9 @@ class Downsample(nn.Module):
         self.name = name
         self.conv = nn.Conv2d(c_in, c_out, 3, stride=2, padding=1)
 
-    def forward(self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         out: torch.Tensor = self.conv(x)
         assert out.size(2) == x.size(2) // 2
         assert out.size(3) == x.size(3) // 2
@@ -106,7 +114,9 @@ class Upsample(nn.Module):
         self.name = name
         self.conv = nn.Conv2d(c_in, c_out, 3, padding=1)
 
-    def forward(self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         out: torch.Tensor = F.interpolate(x, scale_factor=2)
         out = self.conv(out)
         assert out.size(2) == x.size(2) * 2
@@ -116,7 +126,10 @@ class Upsample(nn.Module):
 
 
 def get_embedding(
-    num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None, null_token: bool = False
+    num_embeddings: int,
+    embedding_dim: int,
+    padding_idx: Optional[int] = None,
+    null_token: bool = False,
 ):
     """Build sinusoidal embeddings.
 
@@ -167,7 +180,9 @@ class Unet(nn.Module):
         )
         if classifier_free:
             self.register_buffer(
-                "classifier_embedding", get_embedding(n_classes, embd_dim, null_token=True), persistent=False
+                "classifier_embedding",
+                get_embedding(n_classes, embd_dim, null_token=True),
+                persistent=False,
             )
             logger.info(f"Classifier embedding: {self.classifier_embedding.size()}")
 
@@ -192,9 +207,7 @@ class Unet(nn.Module):
                     classifier_free=self.classifier_free,
                 )
             )
-            self.downblocks.append(
-                Downsample(c_out, c_out, name=f"down_{i}")
-            )
+            self.downblocks.append(Downsample(c_out, c_out, name=f"down_{i}"))
         self.downblocks.append(
             Resnet(
                 c_between[-1],
@@ -246,7 +259,9 @@ class Unet(nn.Module):
         )
         self.output_conv = nn.Conv2d(c_last, c_start, 3, padding=1)
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, c: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         # get timestep embeddings
         t_emb: torch.Tensor = self.timestep_embedding
         c_emb: Optional[torch.Tensor] = None
@@ -266,8 +281,8 @@ class Unet(nn.Module):
         for module in self.downblocks:
             x = module(x, t_emb, c_emb)
         logger.info(f"x={x.size()}, t_emb={t_emb.size()}")
-        x_embedded = x.view(x.size(0), x.size(1), -1) # (B, C, H*W)
-        x_embedded = x_embedded.transpose(1, 2) # (B, H*W, C)
+        x_embedded = x.view(x.size(0), x.size(1), -1)  # (B, C, H*W)
+        x_embedded = x_embedded.transpose(1, 2)  # (B, H*W, C)
         logger.info(f"x_embedded={x_embedded.size()}")
         h = self.attn(x_embedded, x_embedded, x_embedded)[0]
         h = h.transpose(1, 2).contiguous().view(x.size())

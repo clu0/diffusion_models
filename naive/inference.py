@@ -28,7 +28,9 @@ def sample_next_step(
     """
     sample x_{t-1} given x_t and x_0
     """
-    assert torch.all(1 <= t) and torch.all(t < T), f"time index {t} must be in range [2, {T}]"
+    assert torch.all(1 <= t) and torch.all(
+        t < T
+    ), f"time index {t} must be in range [2, {T}]"
     beta_t = betas[t - 1]
     alpha_t = alphas[t - 1]
     alpha_t_1 = alphas[t - 2]

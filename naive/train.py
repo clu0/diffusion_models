@@ -90,31 +90,56 @@ class DiffusionTrainingDataset(Dataset):
 
 def get_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_epoch", type=int, default=500, help="number of epochs")
+    parser.add_argument(
+        "--n_iter", type=int, default=500, help="number of batch iterations"
+    )
     parser.add_argument("--batch_size", type=int, default=128, help="batch size")
-    parser.add_argument("--lr", type=float, default=6*1e-4, help="learning rate")
-    parser.add_argument("--p_null", type=float, default=0.1, help="probability of null class token")
-    parser.add_argument("--model_checkpoint", type=str, default=None, help="path to past model")
-    parser.add_argument("--past_n_epoch", type=int, default=None, help="epoch of past model")
-    parser.add_argument("--data_tensor_path", type=str, default="mnist_upsampled.pt", help="path to data tensor")
-    parser.add_argument("--metadata_path", type=str, default="mnist/mnist.csv", help="path to metadata")
-    parser.add_argument("--model_save_dir", type=str, default="models/", help="prefix for saving model")
+    parser.add_argument("--log_interval", type=int, default=10, help="log interval")
+    parser.add_argument(
+        "--save_interval", type=int, default=200, help="save model interval"
+    )
+    parser.add_argument("--lr", type=float, default=6 * 1e-4, help="learning rate")
+    parser.add_argument(
+        "--p_null", type=float, default=0.1, help="probability of null class token"
+    )
+    parser.add_argument(
+        "--model_checkpoint", type=str, default=None, help="path to past model"
+    )
+    parser.add_argument(
+        "--past_n_iter",
+        type=int,
+        default=None,
+        help="n iterations for past model checkpoint",
+    )
+    parser.add_argument(
+        "--data_tensor_path",
+        type=str,
+        default="mnist_upsampled.pt",
+        help="path to data tensor",
+    )
+    parser.add_argument(
+        "--metadata_path", type=str, default="mnist/mnist.csv", help="path to metadata"
+    )
+    parser.add_argument(
+        "--model_save_dir", type=str, default="models/", help="prefix for saving model"
+    )
     parser.add_argument("--model_save_prefix", type=str, default="")
     parser.add_argument("--log_save_suffix", type=str, default="")
-    parser.add_argument("--log_save_dir", type=str, default="logs/", help="prefix for saving model")
+    parser.add_argument(
+        "--log_save_dir", type=str, default="logs/", help="prefix for saving model"
+    )
     parser.add_argument("--n_classes", type=int, default=10, help="number of classes")
-    parser.add_argument("--classifier_free", dest='classifier_free', action='store_true', help="use classifier free training")
+    parser.add_argument(
+        "--classifier_free",
+        dest="classifier_free",
+        action="store_true",
+        help="use classifier free training",
+    )
     parser.set_defaults(classifier_free=False)
     return parser
 
 
-if __name__ == "__main__":
-    parser = get_parser()
-    args = parser.parse_args()
-
-    print(f"training args: \n{args}")
-
-    # Train with mnist
+def get_mnist_dataset(args):
     mnist_upsampled: torch.Tensor = torch.load(args.data_tensor_path)
     mnist_upsampled = mnist_upsampled.float()
     mnist_metadata = pd.read_csv(args.metadata_path)
@@ -124,61 +149,102 @@ if __name__ == "__main__":
         print(f"training with classifier free")
         p_null = args.p_null
     train_dataloader = DataLoader(
-        DiffusionTrainingDataset(mnist_upsampled, mnist_classes, n_classes=args.n_classes, p_null=p_null),
+        DiffusionTrainingDataset(
+            mnist_upsampled, mnist_classes, n_classes=args.n_classes, p_null=p_null
+        ),
         batch_size=args.batch_size,
         shuffle=True,
     )
+    while True:
+        yield from train_dataloader
 
-    model = Unet(c_start=in_c, classifier_free=args.classifier_free, n_classes=args.n_classes)
-    if args.model_checkpoint is not None:
-        model.load_state_dict(torch.load(args.model_checkpoint))
-    model.to(device=device)
-    print(f"loaded model {args.model_checkpoint}")
 
-    loss_fn = F.mse_loss
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    train_losses = []
-    epoch_losses = []
+def compute_norms(model: nn.Module) -> Tuple[float, float]:
+    weight_norm = 0.0
+    grad_norm = 0.0
+    for p in model.parameters():
+        with torch.no_grad():
+            weight_norm += p.norm(p=2, dtype=torch.float32).item() ** 2
+            if p.grad is not None:
+                grad_norm += p.grad.norm(p=2, dtype=torch.float32).item() ** 2
+    return weight_norm, grad_norm
 
-    model.train()
-    print(f"starting training for {args.n_epoch} epochs")
+
+if __name__ == "__main__":
+    parser = get_parser()
+    args = parser.parse_args()
 
     # initialize save dir and logger
-    log_save_dir = os.path.join(args.log_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+    log_save_dir = os.path.join(
+        args.log_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
     os.mkdir(log_save_dir, exist_ok=True)
-    model_save_dir = os.path.join(args.model_save_dir, datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+    model_save_dir = os.path.join(
+        args.model_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
     os.mkdir(model_save_dir, exist_ok=True)
     output_formats = [
         HumanOutputFormat(sys.stdout),
         HumanOutputFormat(os.path.join(log_save_dir, f"log{args.log_save_suffix}.txt")),
-        CSVOutputFormat(os.path.join(log_save_dir, f"progress{args.log_save_suffix}.csv"))
+        CSVOutputFormat(
+            os.path.join(log_save_dir, f"progress{args.log_save_suffix}.csv")
+        ),
     ]
     logger = Logger(output_formats)
-    
-    for i in range(args.n_epoch):
+
+    logger.log(f"training args: \n{args}")
+
+    # Train with mnist
+    train_data = get_mnist_dataset(args)
+
+    model = Unet(
+        c_start=in_c, classifier_free=args.classifier_free, n_classes=args.n_classes
+    )
+    if args.model_checkpoint is not None:
+        model.load_state_dict(torch.load(args.model_checkpoint))
+    model.to(device=device)
+    logger.log(f"loaded model {args.model_checkpoint}")
+
+    loss_fn = F.mse_loss
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    model.train()
+    logger.log(f"starting training for {args.n_iter} batch iterations")
+
+    for i in range(args.n_iter):
         epoch_start = time()
-        if args.past_n_epoch is not None:
-            i += args.past_n_epoch
+        if args.past_n_iter is not None:
+            i += args.past_n_iter
 
-        logger.logkv("epoch", i)
-        for j, batch in enumerate(train_dataloader):
-            if (j + 1) % 100 == 0:
-                print(f"epoch {i}, batch {j}, loss {np.mean(train_losses[-100:])}")
-            data, noise, times, classes = batch
-            if not args.classifier_free:
-                classes = None
-            optimizer.zero_grad()
-            alpha_ts = alphas[times]
-            alpha_ts = alpha_ts.view(alpha_ts.size(0), alpha_ts.size(1), 1, 1)
-            x_ts = (torch.sqrt(alpha_ts) * data + torch.sqrt(1 - alpha_ts) * noise).float()
-            pred = model(x_ts, times, classes)
-            loss_vals = loss_fn(pred, noise)
-            loss_vals.backward()
-            optimizer.step()
+        logger.logkv("iteration", i)
+        batch = next(train_data)
+        data, noise, times, classes = batch
+        if not args.classifier_free:
+            classes = None
+        optimizer.zero_grad()
+        alpha_ts = alphas[times]
+        alpha_ts = alpha_ts.view(alpha_ts.size(0), alpha_ts.size(1), 1, 1)
+        x_ts = (torch.sqrt(alpha_ts) * data + torch.sqrt(1 - alpha_ts) * noise).float()
+        pred = model(x_ts, times, classes)
+        loss_vals = loss_fn(pred, noise)
+        loss_vals.backward()
+        weight_norm, grad_norm = compute_norms(model)
+        logger.logkv("weight_norm", weight_norm)
+        logger.logkv("grad_norm", grad_norm)
+        logger.logkv_mean("weight_norm_avg", weight_norm)
+        logger.logkv_mean("grad_norm_avg", grad_norm)
+        optimizer.step()
 
-            train_losses.append(loss_vals.item())
-        print(f"finished epoch {i}, took {time() - epoch_start} seconds")
-        np.save(f"{args.loss_save_prefix}_{i+1}.npy", np.array(train_losses))
-        if (i + 1) % 20 == 0:
-            torch.save(model.state_dict(), f"{args.model_save_prefix}_epoch_{i + 1}.pth")
+        logger.logkv("mse_loss", loss_vals.item())
+        logger.log(f"finished epoch {i}, took {time() - epoch_start} seconds")
 
+        if (i + 1) % args.log_interval == 0:
+            logger.dumpkvs()
+        if (i + 1) % args.save_interval == 0:
+            torch.save(model.state_dict(), f"{args.model_save_prefix}_iter_{i + 1}.pth")
+        # np.save(f"{args.loss_save_prefix}_{i+1}.npy", np.array(train_losses))
+        # if (i + 1) % 20 == 0:
+        #    torch.save(model.state_dict(), f"{args.model_save_prefix}_epoch_{i + 1}.pth")
+
+    logger.log("training complete")
+    logger.close()
