@@ -89,16 +89,20 @@ class DiffusionTrainingDataset(Dataset):
 
 
 def get_parser() -> argparse.ArgumentParser:
+    """
+    Default options:
+    --classifier_free
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--n_iter", type=int, default=500, help="number of batch iterations"
+        "--n_iter", type=int, default=500000, help="number of batch iterations"
     )
-    parser.add_argument("--batch_size", type=int, default=128, help="batch size")
-    parser.add_argument("--log_interval", type=int, default=10, help="log interval")
+    parser.add_argument("--batch_size", type=int, default=64, help="batch size")
+    parser.add_argument("--log_interval", type=int, default=100, help="log interval")
     parser.add_argument(
-        "--save_interval", type=int, default=200, help="save model interval"
+        "--save_interval", type=int, default=10000, help="save model interval"
     )
-    parser.add_argument("--lr", type=float, default=6 * 1e-4, help="learning rate")
+    parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
     parser.add_argument(
         "--p_null", type=float, default=0.1, help="probability of null class token"
     )
@@ -123,7 +127,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model_save_dir", type=str, default="models/", help="prefix for saving model"
     )
-    parser.add_argument("--model_save_prefix", type=str, default="")
+    parser.add_argument("--model_save_prefix", type=str, default="model")
     parser.add_argument("--log_save_suffix", type=str, default="")
     parser.add_argument(
         "--log_save_dir", type=str, default="logs/", help="prefix for saving model"
@@ -178,11 +182,7 @@ if __name__ == "__main__":
     log_save_dir = os.path.join(
         args.log_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     )
-    os.mkdir(log_save_dir, exist_ok=True)
-    model_save_dir = os.path.join(
-        args.model_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    )
-    os.mkdir(model_save_dir, exist_ok=True)
+    os.makedirs(log_save_dir, exist_ok=True)
     output_formats = [
         HumanOutputFormat(sys.stdout),
         HumanOutputFormat(os.path.join(log_save_dir, f"log{args.log_save_suffix}.txt")),
@@ -205,14 +205,21 @@ if __name__ == "__main__":
     model.to(device=device)
     logger.log(f"loaded model {args.model_checkpoint}")
 
+    model_save_dir = os.path.join(
+        args.model_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    )
+    os.makedirs(model_save_dir, exist_ok=True)
+    model_filename_prefix = f"{args.model_save_prefix}_batch-{args.batch_size}_lr-{args.lr}_pnull-{args.p_null}_nclasses-{args.n_classes}_CF-{args.classifier_free}"
+
+
     loss_fn = F.mse_loss
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     model.train()
     logger.log(f"starting training for {args.n_iter} batch iterations")
 
+    log_epoch_start = time()
     for i in range(args.n_iter):
-        epoch_start = time()
         if args.past_n_iter is not None:
             i += args.past_n_iter
 
@@ -236,12 +243,15 @@ if __name__ == "__main__":
         optimizer.step()
 
         logger.logkv("mse_loss", loss_vals.item())
-        logger.log(f"finished epoch {i}, took {time() - epoch_start} seconds")
+        logger.logkv_mean("mse_loss_avg", loss_vals.item())
 
         if (i + 1) % args.log_interval == 0:
+            logger.log(f"finished epoch {i}, took {time() - log_epoch_start} seconds")
+            log_epoch_start = time()
             logger.dumpkvs()
         if (i + 1) % args.save_interval == 0:
-            torch.save(model.state_dict(), f"{args.model_save_prefix}_iter_{i + 1}.pth")
+            save_path = os.path.join(model_save_dir, f"{model_filename_prefix}_iter_{i + 1}.pth")
+            torch.save(model.state_dict(), save_path)
         # np.save(f"{args.loss_save_prefix}_{i+1}.npy", np.array(train_losses))
         # if (i + 1) % 20 == 0:
         #    torch.save(model.state_dict(), f"{args.model_save_prefix}_epoch_{i + 1}.pth")

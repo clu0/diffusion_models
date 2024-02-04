@@ -77,7 +77,7 @@ class CSVOutputFormat(KVWriter):
             self.file.write(",".join(keys) + "\n")
 
         # write values
-        self.file.write(",".join(kvs[key] for key in keys) + "\n")
+        self.file.write(",".join(str(kvs[key]) for key in keys) + "\n")
         self.file.flush()
 
     def close(self):
@@ -108,7 +108,10 @@ class Logger(object):
     def log(self, args):
         for fmt in self.output_formats:
             if isinstance(fmt, SeqWriter):
-                fmt.writeseq(map(str, args))
+                if isinstance(args, str):
+                    fmt.writeseq([args])
+                else:
+                    fmt.writeseq(map(str, args))
 
     def close(self):
         for fmt in self.output_formats:
