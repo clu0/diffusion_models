@@ -62,7 +62,7 @@ class HumanOutputFormat(KVWriter, SeqWriter):
             self.file.flush()
 
     def close(self):
-        if self.own_files:
+        if self.own_file:
             self.file.close()
 
 
