@@ -218,7 +218,7 @@ if __name__ == "__main__":
     model.train()
     logger.log(f"starting training for {args.n_iter} batch iterations")
 
-    log_epoch_start = time()
+    start_time = time()
     for i in range(args.n_iter):
         if args.past_n_iter is not None:
             i += args.past_n_iter
@@ -246,8 +246,7 @@ if __name__ == "__main__":
         logger.logkv_mean("mse_loss_avg", loss_vals.item())
 
         if (i + 1) % args.log_interval == 0:
-            logger.log(f"finished epoch {i}, took {time() - log_epoch_start} seconds")
-            log_epoch_start = time()
+            logger.log(f"finished epoch {i}, took {time() - start_time} seconds")
             logger.dumpkvs()
         if (i + 1) % args.save_interval == 0:
             save_path = os.path.join(model_save_dir, f"{model_filename_prefix}_iter_{i + 1}.pth")
