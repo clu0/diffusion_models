@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 EMBEDDING_DIM = 256
-DROPOUT_RATE = 0.1
+DROPOUT_RATE = 0.2
 
 
 class Resnet(nn.Module):
@@ -161,8 +161,7 @@ class Unet(nn.Module):
     Also keeps a trainable timestep embedding
     """
 
-    def __init__(
-        self,
+    def __init__( self,
         c_start: int,
         c_last: int = 64,
         c_between: List[int] = [16, 32, 64, 128],
@@ -293,3 +292,247 @@ class Unet(nn.Module):
         x = self.output_res(x, t_emb, c_emb)
         x = self.output_conv(x)
         return x
+
+
+class MiddleBlock(nn.Module):
+    """
+    the middle layer of the Unet, which also has an attention layer
+    """
+    def __init__(
+        self,
+        c: int,
+        n_group_norm: int,
+        embd_dim: int,
+        classifier_free: bool,
+    ):
+        super().__init__()
+        self.res1 = Resnet(
+                c,
+                c,
+                name="res_middle_1",
+                n_group_norm=n_group_norm,
+                embd_dim=embd_dim,
+                classifier_free=classifier_free,
+        )
+        self.attn = nn.MultiheadAttention(c, 4, dropout=DROPOUT_RATE)
+        self.res2 = Resnet(
+                c,
+                c,
+                name="res_middle_2",
+                n_group_norm=n_group_norm,
+                embd_dim=embd_dim,
+                classifier_free=classifier_free,
+        )
+    
+    def forward(
+        self, x: torch.Tensor, t_emb: torch.Tensor, c_emb: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        r: torch.Tensor = self.res1(x, t_emb, c_emb)
+
+        # attn block
+        r_attn = r.view(r.size(0), r.size(1), -1)  #(B, C, HxW)
+        r_attn = r_attn.transpose(1, 2)  #(B, HxW, C)
+        h: torch.Tensor = self.attn(r_attn, r_attn, r_attn)[0]
+        h = h.transpose(1, 2).contiguous().view(r.size())
+        r = r + h
+        
+        r = self.res2(r, t_emb, c_emb)
+        
+        return x + r
+
+
+class DownBlock(nn.Module):
+    """
+    a unit of resnet + downsample
+    
+    cannot just be wrapped in nn.Sequential, because it doesn't support multiple inputs
+    """
+    def __init__(
+        self,
+        c_in: int,
+        c_out: int,
+        level: int,
+        n_group_norm: int,
+        embd_dim: int,
+        classifier_free: bool,
+    ):
+        super().__init__()
+        self.res = Resnet(
+            c_in,
+            c_in,
+            name=f"res_down_{level}",
+            n_group_norm=n_group_norm,
+            embd_dim=embd_dim,
+            classifier_free=classifier_free,
+        )
+        self.down = Downsample(c_in, c_out, name=f"down_sample_{level}")
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        t_emb: torch.Tensor,
+        c_emb: Optional[torch.Tensor] = None
+    ):
+        x = self.res(x, t_emb, c_emb)
+        x = self.down(x, t_emb, c_emb)
+        return x
+
+
+class UpBlock(nn.Module):
+    def __init__(
+        self,
+        c_in: int,
+        c_out: int,
+        level: int,
+        n_group_norm: int,
+        embd_dim: int,
+        classifier_free: bool,
+    ):
+        super().__init__()
+        self.up = Upsample(c_in, c_out, name=f"up_sample_{level}")
+        self.res = Resnet(
+            c_out,
+            c_out,
+            name=f"res_up_{level}",
+            n_group_norm=n_group_norm,
+            embd_dim=embd_dim,
+            classifier_free=classifier_free,
+        )
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        t_emb: torch.Tensor,
+        c_emb: Optional[torch.Tensor] = None
+    ):
+        x = self.up(x, t_emb, c_emb)
+        x = self.res(x, t_emb, c_emb)
+        return x
+        
+
+class UnetV1(nn.Module):
+    """
+    The point of the Unet is that you need long skip connections
+    i.e. if you have downblock + middle + upblock,
+    you actually want the following during a forward call:
+    
+    input x
+    h = up(middle(down(x)))
+    return x + h
+    
+    We were not doing this in the plain Unet implementation above, so we'll do it in v1
+    """
+    def __init__( self,
+        c_start: int,
+        c_between: List[int] = [16, 32, 64, 128],
+        n_group_norm: int = 4,
+        embd_dim: int = EMBEDDING_DIM,
+        classifier_free: bool = False,
+        n_classes: int = 0,
+    ):
+        super().__init__()
+        self.name = "Unet_v1"
+        self.classifier_free = classifier_free
+
+        self.register_buffer(
+            "timestep_embedding", get_embedding(1000, embd_dim), persistent=False
+        )
+        if classifier_free:
+            self.register_buffer(
+                "classifier_embedding",
+                get_embedding(n_classes, embd_dim, null_token=True),
+                persistent=False,
+            )
+            logger.info(f"Classifier embedding: {self.classifier_embedding.size()}")
+
+        self.learnable_embedding_block = nn.Sequential(
+            nn.Linear(embd_dim, embd_dim),
+            nn.SiLU(),
+            nn.Linear(embd_dim, embd_dim),
+        )
+
+        self.initial_conv = nn.Conv2d(c_start, c_between[0], 3, padding=1)
+
+        self.downblocks = nn.ModuleList()
+        for i, c_in in enumerate(c_between[:-1]):
+            c_out = c_between[i + 1]
+            self.downblocks.append(
+                DownBlock(
+                    c_in,
+                    c_out,
+                    i,
+                    n_group_norm,
+                    embd_dim,
+                    classifier_free,
+                )
+            )
+        
+        self.middle_layer = MiddleBlock(
+            c=c_between[-1],
+            n_group_norm=n_group_norm,
+            embd_dim=embd_dim,
+            classifier_free=classifier_free,
+        )
+
+        self.upblocks = nn.ModuleList()
+        logger.info(f"first upblock: {c_between[-1]} -> {c_between[-1]}")
+        reversed_c = list(reversed(c_between))
+        for i, c_in in enumerate(reversed_c[:-1]):
+            c_out = reversed_c[i + 1]
+            logger.info(f"upblock {i}: {c_in} -> {c_out}")
+            self.upblocks.append(
+                UpBlock(
+                    c_in,
+                    c_out,
+                    i,
+                    n_group_norm,
+                    embd_dim,
+                    classifier_free,
+                )
+            )
+
+        self.output_layer = nn.Sequential(
+            nn.GroupNorm(n_group_norm, c_between[0]),
+            nn.SiLU(),
+            nn.Dropout(DROPOUT_RATE),
+            nn.Conv2d(c_between[0], c_start, 3, padding=1),
+        )
+
+    def forward(
+        self, x: torch.Tensor, t: torch.Tensor, c: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # get timestep embeddings
+        t_emb: torch.Tensor = self.timestep_embedding
+        c_emb: Optional[torch.Tensor] = None
+        if self.classifier_free:
+            assert c is not None
+            c_emb: torch.Tensor = self.classifier_embedding
+            c_emb = c_emb.index_select(0, c.view(-1)).view(c.size(0), -1)
+            logger.info(f"c_emb={c_emb.size()}")
+
+        # the next step is copying the DDPM implementation, which passes the timestep embeddings through some dense layers
+        # But this is actually quite weird, because if we're passing time indices through a randomly initialized dense layer anyway,
+        # then why not just use trainable embeddings, like nn.Embedding?
+        t_emb = self.learnable_embedding_block(t_emb)
+        t_emb = t_emb.index_select(0, t.view(-1)).view(t.size(0), -1)
+
+        xs = [x]
+        x = self.initial_conv(x)
+        xs.append(x)
+        for module in self.downblocks:
+            x = module(x, t_emb, c_emb)
+            xs.append(x)
+        logger.info(f"x={x.size()}, t_emb={t_emb.size()}")
+
+        h = self.middle_layer(x, t_emb, c_emb)
+
+        xs.reverse()
+        h = h + xs.pop(0)
+        
+        for module in self.upblocks:
+            h = module(h, t_emb, c_emb)
+            h += xs.pop(0)
+        
+        assert len(xs) == 1, "should only have initial input left to concatenate"
+        h = self.output_layer(h)
+        return xs[0] + h

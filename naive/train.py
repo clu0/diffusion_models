@@ -22,7 +22,7 @@ import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
-from src.model import Unet
+from src.model import Unet, UnetV1
 from src.logger import Logger, HumanOutputFormat, CSVOutputFormat
 
 
@@ -139,6 +139,7 @@ def get_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use classifier free training",
     )
+    parser.add_argument("--model_version", type=str, default="v1", help="model version")
     parser.set_defaults(classifier_free=False)
     return parser
 
@@ -197,13 +198,22 @@ if __name__ == "__main__":
     # Train with mnist
     train_data = get_mnist_dataset(args)
 
-    model = Unet(
-        c_start=in_c, classifier_free=args.classifier_free, n_classes=args.n_classes
-    )
+    if args.model_version == "v1":
+        model = UnetV1(
+            c_start=in_c, classifier_free=args.classifier_free, n_classes=args.n_classes
+        )
+    elif args.model_version == "v0":
+        model = Unet(
+            c_start=in_c, classifier_free=args.classifier_free, n_classes=args.n_classes
+        )
+    else:
+        raise ValueError(f"unknown model version {args.model_version}")
+
     if args.model_checkpoint is not None:
         model.load_state_dict(torch.load(args.model_checkpoint))
+        logger.log(f"loaded model {args.model_checkpoint}")
     model.to(device=device)
-    logger.log(f"loaded model {args.model_checkpoint}")
+    logger.log(f"model to device {device}")
 
     model_save_dir = os.path.join(
         args.model_save_dir, datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
