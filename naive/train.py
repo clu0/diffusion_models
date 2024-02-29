@@ -103,6 +103,7 @@ def get_parser() -> argparse.ArgumentParser:
         "--save_interval", type=int, default=10000, help="save model interval"
     )
     parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
+    parser.add_argument("--gradient_clip", type=float, default=None, help="gradient clip")
     parser.add_argument(
         "--p_null", type=float, default=0.1, help="probability of null class token"
     )
@@ -250,6 +251,9 @@ if __name__ == "__main__":
         logger.logkv("grad_norm", grad_norm)
         logger.logkv_mean("weight_norm_avg", weight_norm)
         logger.logkv_mean("grad_norm_avg", grad_norm)
+
+        if args.gradient_clip is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip)
         optimizer.step()
 
         logger.logkv("mse_loss", loss_vals.item())
